@@ -4,7 +4,9 @@
     "builds": [
         {
             "name": "learning-alarm",
-            "sdkconfig_append": []
+            "sdkconfig_append": [
+                "CONFIG_OTA_URL=\"https://ysezteacher.online/xiaozhi/ota/\""
+            ]
         }
     ]
 }
