@@ -1,0 +1,35 @@
+name: Build Learning Alarm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build learning-alarm
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v6.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Build learning-alarm
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          source "$IDF_PATH/export.sh"
+          python scripts/build.py learning-alarm --name learning-alarm --language zh-CN
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: learning-alarm-firmware
+          path: |
+            build/merged-binary.bin
+            build/xiaozhi.bin
+          if-no-files-found: error

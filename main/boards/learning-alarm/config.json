@@ -1,0 +1,10 @@
+{
+    "type": "learning-alarm",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "learning-alarm",
+            "sdkconfig_append": []
+        }
+    ]
+}
