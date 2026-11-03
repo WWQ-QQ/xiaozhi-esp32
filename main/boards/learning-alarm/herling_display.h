@@ -9,13 +9,13 @@
 // 赫灵自定义仪表盘 Display（继承 SpiLcdDisplay）。
 //
 // 两模式并存：
-//   · 仪表盘模式（待机 Idle）：时钟/课表/待办/设置四页，左右滑动换页，
+//   · 仪表盘模式（默认，含待机/配网/启动）：时钟/课表/待办/设置四页，左右滑动换页，
 //     时钟页左侧时间 + 右侧鲸鱼娘（idle 动画）。显示 root_，隐藏基类对话 UI。
-//   · 对话模式（非 Idle）：复用基类 emoji_box_（鲸鱼娘大图，由 SetEmotion 驱动
-//     状态动画）+ status_bar_（状态文字）+ bottom_bar_（字幕）+ top_bar_（电池/网络）。
-//     隐藏 root_。
+//   · 对话模式（仅 Listening/Speaking/Connecting）：复用基类 emoji_box_（鲸鱼娘大图，
+//     由 SetEmotion 驱动状态动画）+ status_bar_ + bottom_bar_ + top_bar_。隐藏 root_。
 //
-// RefreshMode() 按设备状态在两种模式间切换。
+// RefreshMode() 按设备状态在两种模式间切换。课表/待办为 L5 场景内容，已外置到 L2 数据层，
+// 终端不硬编码（见 01_Projects/学习闹钟/学习闹钟 - 分层架构纲领.md）。
 class HerlingDisplay : public SpiLcdDisplay {
 public:
     HerlingDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,

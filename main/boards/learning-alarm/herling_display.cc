@@ -3,6 +3,7 @@
 #include "application.h"
 #include "assets.h"
 #include "display/lvgl_display/lvgl_image.h"
+#include "display/lvgl_display/lvgl_theme.h"
 
 #include <esp_log.h>
 #include <lvgl.h>
@@ -17,8 +18,6 @@ namespace {
 
 // ── 深色拟物配色（对应 HTML 效果图 v2）──
 constexpr uint32_t kBg = 0x0C0E10;        // 场景底
-constexpr uint32_t kPanelTop = 0x24272C;  // 卡片顶部
-constexpr uint32_t kWellInner = 0x07090A; // 凹槽最深
 constexpr uint32_t kAmber = 0xFF8A1E;     // 唯一强调色
 constexpr uint32_t kText = 0xCFD4D9;      // 主文本
 constexpr uint32_t kTextDim = 0x7C838B;   // 次级文本
@@ -39,43 +38,8 @@ const char* EmotionToGif(const char* emotion) {
     return "idle.gif";  // 未知情绪回退待机
 }
 
-// ── 本周课表（周一~周六），节次 + 科目 + 起止时间（真实数据）──
-struct Lesson {
-    int n;
-    const char* sub;
-    int s;  // 开始分钟
-    int e;  // 结束分钟
-};
-
-const Lesson kSchedule[7][6] = {
-    {},                                                                      // 0 周日
-    {{2, "数学·高二16班", 610, 650}, {4, "数学·高二15班", 730, 770}},        // 周一
-    {{1, "数学·高二16班", 560, 600}, {4, "数学·高二15班", 730, 770}},        // 周二
-    {{3, "数学·高二15班", 680, 720}, {4, "数学·高二16班", 730, 770}},        // 周三
-    {{3, "数学·高二15班", 680, 720}, {4, "数学·高二16班", 730, 770}},        // 周四
-    {{4, "数学·高二16班", 730, 770}, {5, "数学·高二15班", 780, 820}},        // 周五
-    {},                                                                      // 周六
-};
-
-const int kScheduleCount[7] = {0, 2, 2, 2, 2, 2, 0};
-
-// ── 真实待办 ──
-struct Todo {
-    const char* txt;
-    bool done;
-};
-const Todo kTodos[] = {
-    {"等 Hermes 回后台数据基线", false},
-    {"唤醒词「你好赫灵」落地", false},
-    {"音色保留 xiaohe·转达 Hermes", false},
-    {"sudo pm2 startup 开机自启", false},
-    {"电源模块 30 秒断电测试", false},
-    {"shim :8010 纵深防御", false},
-    {"改 root 密码（安全）", false},
-    {"设备白名单放行", true},
-};
-constexpr int kTodoCount = sizeof(kTodos) / sizeof(kTodos[0]);
-
+// 课表/待办是 L5 场景内容，已外置到 L2 数据层（面板 schedule.json / todos.json），
+// 终端固件不再硬编码。课表页/待办页/时钟页「下一节」显示占位，待数据层接口接入。
 const char* kWeekCn[] = {"日", "一", "二", "三", "四", "五", "六"};
 
 const char* kPageTitles[4] = {
@@ -103,8 +67,18 @@ void HerlingDisplay::SetupUI() {
     // 复用基类对话 UI（emoji_box_ / status_bar_ / bottom_bar_ / top_bar_ 等）
     SpiLcdDisplay::SetupUI();
 
+    // 默认深色主题（治白屏）。SetTheme 内部自锁，故在持锁前调用，避免 lvgl_port_lock 嵌套死锁。
+    auto* dark_theme = LvglThemeManager::GetInstance().GetTheme("dark");
+    if (dark_theme != nullptr) {
+        SetTheme(dark_theme);
+    }
+
     DisplayLockGuard lock(this);
     auto* screen = lv_screen_active();
+
+    // 关掉 screen 滚动，确保左右滑动手势不被滚动消费（仿 chd-esp32s3-box）
+    lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(screen, LV_DIR_NONE);
 
     // ── 仪表盘覆盖层 root_ ──
     root_ = lv_obj_create(screen);
@@ -161,8 +135,8 @@ void HerlingDisplay::SetupUI() {
     BuildTodoPage();
     BuildSettingsPage();
 
-    // 手势：左右滑动换页
-    lv_obj_add_event_cb(root_, GestureEventCb, LV_EVENT_GESTURE, this);
+    // 手势：左右滑动换页（注册在 screen，仿 chd-esp32s3-box，避免被 root_ 覆盖层拦截）
+    lv_obj_add_event_cb(screen, GestureEventCb, LV_EVENT_GESTURE, this);
 
     // 时钟刷新定时器（每秒）
     lv_timer_create(ClockTimerCb, 1000, this);
@@ -223,60 +197,12 @@ void HerlingDisplay::BuildSchedulePage() {
     lv_obj_set_style_text_color(title, lv_color_hex(kTextDim), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    lv_obj_t* list = lv_obj_create(page);
-    lv_obj_set_size(list, LV_HOR_RES - 24, LV_VER_RES - 80);
-    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_pad_all(list, 0, 0);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(list, 6, 0);
-    lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_align(list, LV_ALIGN_TOP_LEFT, 0, 24);
-
-    time_t now = time(NULL);
-    struct tm* tm_now = localtime(&now);
-    int wday = tm_now ? tm_now->tm_wday : 0;
-    int cnt = kScheduleCount[wday];
-
-    if (cnt == 0) {
-        lv_obj_t* empty = lv_label_create(list);
-        lv_label_set_text(empty, "今日无课");
-        lv_obj_set_style_text_color(empty, lv_color_hex(kTextDim), 0);
-        return;
-    }
-
-    int hm = tm_now ? (tm_now->tm_hour * 60 + tm_now->tm_min) : 0;
-    for (int i = 0; i < cnt; i++) {
-        const Lesson& l = kSchedule[wday][i];
-        bool active = hm >= l.s && hm < l.e;
-
-        lv_obj_t* row = lv_obj_create(list);
-        lv_obj_set_size(row, LV_HOR_RES - 24, LV_SIZE_CONTENT);
-        lv_obj_set_style_radius(row, 8, 0);
-        lv_obj_set_style_pad_all(row, 8, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_bg_color(row,
-                                  active ? lv_color_hex(0x3A2410) : lv_color_hex(kPanelTop), 0);
-
-        char buf[32];
-        lv_obj_t* n = lv_label_create(row);
-        snprintf(buf, sizeof(buf), "第%d节", l.n);
-        lv_label_set_text(n, buf);
-        lv_obj_set_style_text_color(n, active ? lv_color_hex(kAmber) : lv_color_hex(kTextDim), 0);
-
-        lv_obj_t* sub = lv_label_create(row);
-        lv_label_set_text(sub, l.sub);
-        lv_obj_set_style_text_color(sub, active ? lv_color_white() : lv_color_hex(kText), 0);
-
-        lv_obj_t* t = lv_label_create(row);
-        snprintf(buf, sizeof(buf), "%02d:%02d", l.s / 60, l.s % 60);
-        lv_label_set_text(t, buf);
-        lv_obj_set_style_text_color(t, active ? lv_color_hex(kAmber) : lv_color_hex(kTextDim), 0);
-    }
+    // 课表数据已外置到 L2 数据层（面板 schedule.json），终端不硬编码。
+    // 待数据层只读接口接入后，这里改为动态渲染。
+    lv_obj_t* hint = lv_label_create(page);
+    lv_label_set_text(hint, "课表数据待接入");
+    lv_obj_set_style_text_color(hint, lv_color_hex(kTextDim), 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 0);
 }
 
 void HerlingDisplay::BuildTodoPage() {
@@ -286,44 +212,12 @@ void HerlingDisplay::BuildTodoPage() {
     lv_obj_set_style_text_color(title, lv_color_hex(kTextDim), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    lv_obj_t* list = lv_obj_create(page);
-    lv_obj_set_size(list, LV_HOR_RES - 24, LV_VER_RES - 80);
-    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_pad_all(list, 0, 0);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(list, 4, 0);
-    lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_align(list, LV_ALIGN_TOP_LEFT, 0, 24);
-
-    for (int i = 0; i < kTodoCount; i++) {
-        lv_obj_t* row = lv_obj_create(list);
-        lv_obj_set_size(row, LV_HOR_RES - 24, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 4, 0);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(row, 8, 0);
-
-        lv_obj_t* box = lv_obj_create(row);
-        lv_obj_set_size(box, 14, 14);
-        lv_obj_set_style_radius(box, 4, 0);
-        lv_obj_set_style_border_width(box, 0, 0);
-        lv_obj_set_style_bg_color(box, kTodos[i].done ? lv_color_hex(0x3A2A14)
-                                                      : lv_color_hex(kWellInner),
-                                  0);
-
-        lv_obj_t* txt = lv_label_create(row);
-        lv_label_set_text(txt, kTodos[i].txt);
-        lv_obj_set_style_text_color(txt,
-                                    kTodos[i].done ? lv_color_hex(kTextDim) : lv_color_hex(kText),
-                                    0);
-        if (kTodos[i].done) {
-            lv_obj_set_style_text_decor(txt, LV_TEXT_DECOR_STRIKETHROUGH, 0);
-        }
-    }
+    // 待办数据已外置到 L2 数据层（面板 todos.json），终端不硬编码。
+    // 待数据层只读接口接入后，这里改为动态渲染。
+    lv_obj_t* hint = lv_label_create(page);
+    lv_label_set_text(hint, "待办数据待接入");
+    lv_obj_set_style_text_color(hint, lv_color_hex(kTextDim), 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 0);
 }
 
 void HerlingDisplay::BuildSettingsPage() {
@@ -357,9 +251,17 @@ void HerlingDisplay::ShowPage(Page page) {
 }
 
 void HerlingDisplay::RefreshMode() {
-    bool idle = (Application::GetInstance().GetDeviceState() == kDeviceStateIdle);
-    if (idle) {
-        // 仪表盘模式
+    auto state = Application::GetInstance().GetDeviceState();
+    // 只有真正「对话中」才切到鲸鱼娘大图；其余（Starting/配网/Idle/激活等）一律显示前端仪表盘。
+    bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
+                     state == kDeviceStateConnecting);
+    if (chatting) {
+        // 对话模式：隐藏仪表盘，露出基类 emoji_box_/status_bar_/bottom_bar_
+        if (root_ != nullptr) lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
+        if (emoji_box_ != nullptr) lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        if (bottom_bar_ != nullptr) lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        // 仪表盘模式（含待机/配网/启动，治白屏）
         if (root_ != nullptr) lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
         if (emoji_box_ != nullptr) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
         if (bottom_bar_ != nullptr) lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
@@ -368,11 +270,6 @@ void HerlingDisplay::RefreshMode() {
         if (pet_image_ != nullptr) {
             PlayPetGif(pet_gif_, pet_image_, "idle.gif", 256);
         }
-    } else {
-        // 对话模式：隐藏仪表盘，露出基类 emoji_box_/status_bar_/bottom_bar_
-        if (root_ != nullptr) lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
-        if (emoji_box_ != nullptr) lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
-        if (bottom_bar_ != nullptr) lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -397,25 +294,9 @@ void HerlingDisplay::UpdateClockLabels() {
     }
 
     if (clock_next_label_ != nullptr) {
-        int wday = tm_now->tm_wday;
-        int cnt = kScheduleCount[wday];
-        int hm = tm_now->tm_hour * 60 + tm_now->tm_min;
-        int next = -1;
-        for (int i = 0; i < cnt; i++) {
-            if (kSchedule[wday][i].s > hm) {
-                next = i;
-                break;
-            }
-        }
-        if (next >= 0) {
-            const Lesson& l = kSchedule[wday][next];
-            snprintf(buf, sizeof(buf), "下一节 %s %02d:%02d", l.sub, l.s / 60, l.s % 60);
-            lv_label_set_text(clock_next_label_, buf);
-        } else if (cnt > 0) {
-            lv_label_set_text(clock_next_label_, "今日课程已结束");
-        } else {
-            lv_label_set_text(clock_next_label_, "今日无课");
-        }
+        // 课表已外置到 L2 数据层，终端不再本地推算「下一节」。
+        // 待数据层只读接口接入后，由接口返回下一节课信息。
+        lv_label_set_text(clock_next_label_, "课表待接入");
     }
 }
 
@@ -456,8 +337,10 @@ void HerlingDisplay::PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img,
 
 void HerlingDisplay::SetEmotion(const char* emotion) {
     auto state = Application::GetInstance().GetDeviceState();
-    if (state == kDeviceStateIdle) {
-        // 待机：仪表盘时钟页鲸鱼娘保持 idle
+    bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
+                     state == kDeviceStateConnecting);
+    if (!chatting) {
+        // 非对话态（待机/配网/启动）：仪表盘时钟页鲸鱼娘保持 idle
         DisplayLockGuard lock(this);
         if (pet_image_ != nullptr) {
             PlayPetGif(pet_gif_, pet_image_, "idle.gif", 256);
@@ -483,6 +366,7 @@ void HerlingDisplay::SetStatus(const char* status) {
 void HerlingDisplay::GestureEventCb(lv_event_t* e) {
     auto* self = static_cast<HerlingDisplay*>(lv_event_get_user_data(e));
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+    ESP_LOGI(TAG, "Gesture dir=%d", (int)dir);
     if (dir == LV_DIR_LEFT) {
         DisplayLockGuard lock(self);
         self->ShowPage(static_cast<Page>((self->current_page_ + 1) % kPageCount));
@@ -496,7 +380,10 @@ void HerlingDisplay::ClockTimerCb(lv_timer_t* timer) {
     auto* self = static_cast<HerlingDisplay*>(lv_timer_get_user_data(timer));
     if (self == nullptr) return;
     DisplayLockGuard lock(self);
-    if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+    auto state = Application::GetInstance().GetDeviceState();
+    bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
+                     state == kDeviceStateConnecting);
+    if (!chatting) {
         self->UpdateClockLabels();
     }
 }
