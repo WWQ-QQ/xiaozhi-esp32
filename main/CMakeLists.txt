@@ -903,6 +903,7 @@ elseif(CONFIG_BOARD_TYPE_LEARNING_ALARM)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
     set(EMOTE_RESOLUTION "320_240")
+    set(DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/boards/learning-alarm/assets")
 endif()
 
 if(NOT BOARD_DIR AND NOT CMAKE_BUILD_EARLY_EXPANSION)
