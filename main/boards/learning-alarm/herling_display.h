@@ -8,14 +8,12 @@
 
 // 赫灵自定义仪表盘 Display（继承 SpiLcdDisplay）。
 //
-// 两模式并存：
-//   · 仪表盘模式（默认，含待机/配网/启动）：时钟/课表/待办/设置四页，左右滑动换页，
-//     时钟页左侧时间 + 右侧鲸鱼娘（idle 动画）。显示 root_，隐藏基类对话 UI。
-//   · 对话模式（仅 Listening/Speaking/Connecting）：复用基类 emoji_box_（鲸鱼娘大图，
-//     由 SetEmotion 驱动状态动画）+ status_bar_ + bottom_bar_ + top_bar_。隐藏 root_。
+// 仪表盘始终显示（含待机/配网/启动/对话）：时钟/课表/待办/设置四页，左右滑动换页，
+// 时钟页左侧时间 + 右侧鲸鱼娘小图。对话时鲸鱼娘小图由 SetEmotion 驱动切换状态 GIF，
+// 不跳转基类 emoji_box_ 大图。基类对话 UI 隐藏，仅复用其内部对象。
 //
-// RefreshMode() 按设备状态在两种模式间切换。课表/待办为 L5 场景内容，已外置到 L2 数据层，
-// 终端不硬编码（见 01_Projects/学习闹钟/学习闹钟 - 分层架构纲领.md）。
+// 课表/待办为 L5 场景内容，已外置到 L2 数据层，终端不硬编码
+// （见 01_Projects/学习闹钟/学习闹钟 - 分层架构纲领.md）。
 class HerlingDisplay : public SpiLcdDisplay {
 public:
     HerlingDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -50,12 +48,14 @@ private:
     lv_obj_t* clock_next_label_ = nullptr;        // 下一节课
     lv_obj_t* clock_pet_state_label_ = nullptr;   // 鲸鱼娘状态
 
-    // ── 鲸鱼娘（时钟页小图 idle + 对话模式大图复用基类 emoji_image_）──
+    // ── 鲸鱼娘（常驻时钟页小图，对话时随 agent 状态切换 GIF，不再切大图）──
     lv_obj_t* pet_image_ = nullptr;
-    std::unique_ptr<LvglGif> pet_gif_;            // 时钟页 idle 动画
-    std::unique_ptr<LvglGif> chat_gif_;           // 对话模式状态动画
+    std::unique_ptr<LvglGif> pet_gif_;            // 小图状态动画（idle/waving/review…）
+    const char* pet_gif_name_ = nullptr;          // 当前播放 GIF 名，同名跳过防闪烁
 
     Page current_page_ = kPageClock;
+    int press_x_ = 0;                             // 按下坐标（自建滑动判定）
+    int press_y_ = 0;
 
     void BuildClockPage();
     void BuildSchedulePage();
@@ -68,7 +68,7 @@ private:
     void PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img, const char* gif_name,
                     int scale);
 
-    static void GestureEventCb(lv_event_t* e);
+    static void TouchEventCb(lv_event_t* e);
     static void ClockTimerCb(lv_timer_t* timer);
 };
 

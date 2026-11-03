@@ -42,6 +42,9 @@ const char* EmotionToGif(const char* emotion) {
 // 终端固件不再硬编码。课表页/待办页/时钟页「下一节」显示占位，待数据层接口接入。
 const char* kWeekCn[] = {"日", "一", "二", "三", "四", "五", "六"};
 
+// 滑动翻页最小横向位移（px）。不用 LV_EVENT_GESTURE 的速度门槛，轻滑即可触发。
+constexpr int kSwipeThreshold = 30;
+
 const char* kPageTitles[4] = {
     "赫灵 · 时钟", "赫灵 · 课表", "赫灵 · 待办", "赫灵 · 设置"};
 
@@ -55,7 +58,6 @@ HerlingDisplay::HerlingDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 
 HerlingDisplay::~HerlingDisplay() {
     pet_gif_.reset();
-    chat_gif_.reset();
 }
 
 void HerlingDisplay::SetupUI() {
@@ -135,8 +137,10 @@ void HerlingDisplay::SetupUI() {
     BuildTodoPage();
     BuildSettingsPage();
 
-    // 手势：左右滑动换页（注册在 screen，仿 chd-esp32s3-box，避免被 root_ 覆盖层拦截）
-    lv_obj_add_event_cb(screen, GestureEventCb, LV_EVENT_GESTURE, this);
+    // 滑动换页：自建 PRESSED/RELEASED 位移判定（阈值轻、轻滑即翻页）。
+    // 不用 LV_EVENT_GESTURE——它要求快速甩动速度，慢滑不触发，手感不灵活。
+    lv_obj_add_event_cb(screen, TouchEventCb, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(screen, TouchEventCb, LV_EVENT_RELEASED, this);
 
     // 时钟刷新定时器（每秒）
     lv_timer_create(ClockTimerCb, 1000, this);
@@ -251,20 +255,16 @@ void HerlingDisplay::ShowPage(Page page) {
 }
 
 void HerlingDisplay::RefreshMode() {
+    // 仪表盘始终显示（含待机/配网/启动/对话）。鲸鱼娘常驻时钟页小图，对话时由
+    // SetEmotion 驱动小图状态切换，不再跳转基类 emoji_box_ 大图（用户确认：形象在桌面即可）。
+    if (root_ != nullptr) lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
+    if (emoji_box_ != nullptr) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    if (bottom_bar_ != nullptr) lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+
     auto state = Application::GetInstance().GetDeviceState();
-    // 只有真正「对话中」才切到鲸鱼娘大图；其余（Starting/配网/Idle/激活等）一律显示前端仪表盘。
     bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
                      state == kDeviceStateConnecting);
-    if (chatting) {
-        // 对话模式：隐藏仪表盘，露出基类 emoji_box_/status_bar_/bottom_bar_
-        if (root_ != nullptr) lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
-        if (emoji_box_ != nullptr) lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
-        if (bottom_bar_ != nullptr) lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        // 仪表盘模式（含待机/配网/启动，治白屏）
-        if (root_ != nullptr) lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
-        if (emoji_box_ != nullptr) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
-        if (bottom_bar_ != nullptr) lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    if (!chatting) {
         UpdateClockLabels();
         // 鲸鱼娘 idle 动画懒加载：assets 就绪前会失败，每次回待机态重试
         if (pet_image_ != nullptr) {
@@ -303,6 +303,8 @@ void HerlingDisplay::UpdateClockLabels() {
 void HerlingDisplay::PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img,
                                 const char* gif_name, int scale) {
     if (img == nullptr) return;
+    if (gif && pet_gif_name_ != nullptr && strcmp(pet_gif_name_, gif_name) == 0)
+        return;  // 同名已在播，跳过防闪烁
     auto& assets = Assets::GetInstance();
     void* ptr = nullptr;
     size_t size = 0;
@@ -333,27 +335,15 @@ void HerlingDisplay::PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img,
     lv_image_set_src(img, gif->image_dsc());
     lv_image_set_scale(img, scale);
     gif->Start();
+    pet_gif_name_ = gif_name;
 }
 
 void HerlingDisplay::SetEmotion(const char* emotion) {
-    auto state = Application::GetInstance().GetDeviceState();
-    bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
-                     state == kDeviceStateConnecting);
-    if (!chatting) {
-        // 非对话态（待机/配网/启动）：仪表盘时钟页鲸鱼娘保持 idle
-        DisplayLockGuard lock(this);
-        if (pet_image_ != nullptr) {
-            PlayPetGif(pet_gif_, pet_image_, "idle.gif", 256);
-        }
-        return;
-    }
-
-    // 对话模式：鲸鱼娘大图复用基类 emoji_image_
+    // 鲸鱼娘常驻时钟页小图：待机 idle，对话随 agent 状态切 GIF（idle→waving→review…），
+    // 不再切基类 emoji_image_ 大图。
     DisplayLockGuard lock(this);
-    if (emoji_image_ != nullptr) {
-        PlayPetGif(chat_gif_, emoji_image_, EmotionToGif(emotion), 256);
-        lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    if (pet_image_ != nullptr) {
+        PlayPetGif(pet_gif_, pet_image_, EmotionToGif(emotion), 256);
     }
 }
 
@@ -363,16 +353,27 @@ void HerlingDisplay::SetStatus(const char* status) {
     RefreshMode();
 }
 
-void HerlingDisplay::GestureEventCb(lv_event_t* e) {
+void HerlingDisplay::TouchEventCb(lv_event_t* e) {
     auto* self = static_cast<HerlingDisplay*>(lv_event_get_user_data(e));
-    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-    ESP_LOGI(TAG, "Gesture dir=%d", (int)dir);
-    if (dir == LV_DIR_LEFT) {
+    lv_point_t pt;
+    lv_indev_get_point(lv_indev_active(), &pt);
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        self->press_x_ = pt.x;
+        self->press_y_ = pt.y;
+        return;
+    }
+
+    // 松开：按位移判定，轻滑即翻页（LV_EVENT_GESTURE 要求快速甩动速度，慢滑不触发）
+    int dx = pt.x - self->press_x_;
+    int dy = pt.y - self->press_y_;
+    int adx = dx < 0 ? -dx : dx;
+    int ady = dy < 0 ? -dy : dy;
+    if (adx > kSwipeThreshold && adx > ady) {
+        // 右滑（dx>0）→ 上一页；左滑（dx<0）→ 下一页
+        Page target = static_cast<Page>(
+            (self->current_page_ + (dx > 0 ? kPageCount - 1 : 1)) % kPageCount);
         DisplayLockGuard lock(self);
-        self->ShowPage(static_cast<Page>((self->current_page_ + 1) % kPageCount));
-    } else if (dir == LV_DIR_RIGHT) {
-        DisplayLockGuard lock(self);
-        self->ShowPage(static_cast<Page>((self->current_page_ + kPageCount - 1) % kPageCount));
+        self->ShowPage(target);
     }
 }
 
@@ -380,10 +381,5 @@ void HerlingDisplay::ClockTimerCb(lv_timer_t* timer) {
     auto* self = static_cast<HerlingDisplay*>(lv_timer_get_user_data(timer));
     if (self == nullptr) return;
     DisplayLockGuard lock(self);
-    auto state = Application::GetInstance().GetDeviceState();
-    bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
-                     state == kDeviceStateConnecting);
-    if (!chatting) {
-        self->UpdateClockLabels();
-    }
+    self->UpdateClockLabels();
 }
