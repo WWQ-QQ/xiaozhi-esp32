@@ -3,7 +3,6 @@
 #include "application.h"
 #include "assets.h"
 #include "display/lvgl_display/lvgl_image.h"
-#include "display/lvgl_display/lvgl_theme.h"
 
 #include <esp_log.h>
 #include <lvgl.h>
@@ -106,7 +105,6 @@ void HerlingDisplay::SetupUI() {
 
     DisplayLockGuard lock(this);
     auto* screen = lv_screen_active();
-    auto* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
 
     // ── 仪表盘覆盖层 root_ ──
     root_ = lv_obj_create(screen);
@@ -121,7 +119,6 @@ void HerlingDisplay::SetupUI() {
     // 顶部标题（左上）
     title_label_ = lv_label_create(root_);
     lv_label_set_text(title_label_, kPageTitles[kPageClock]);
-    lv_obj_set_style_text_font(title_label_, lvgl_theme->text_font()->font(), 0);
     lv_obj_set_style_text_color(title_label_, lv_color_hex(kText), 0);
     lv_obj_align(title_label_, LV_ALIGN_TOP_LEFT, 12, 8);
 
@@ -176,7 +173,6 @@ void HerlingDisplay::SetupUI() {
 
 void HerlingDisplay::BuildClockPage() {
     auto* page = pages_[kPageClock];
-    auto* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
 
     // 左侧信息栏
     lv_obj_t* info = lv_obj_create(page);
@@ -193,7 +189,6 @@ void HerlingDisplay::BuildClockPage() {
     clock_time_label_ = lv_label_create(info);
     lv_label_set_text(clock_time_label_, "--:--");
     lv_obj_set_style_text_color(clock_time_label_, lv_color_hex(kAmber), 0);
-    lv_obj_set_style_text_font(clock_time_label_, lvgl_theme->text_font()->font(), 0);
     lv_obj_set_style_transform_scale(clock_time_label_, 512, 0);  // 256 = 100%，512 = 2x
 
     // 日期

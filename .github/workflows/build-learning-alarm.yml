@@ -32,4 +32,6 @@ jobs:
           path: |
             build/merged-binary.bin
             build/xiaozhi.bin
+            build/xiaozhi.elf
+            build/xiaozhi.map
           if-no-files-found: error
