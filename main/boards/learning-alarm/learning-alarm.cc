@@ -138,7 +138,9 @@ private:
             },
             .flags = {
                 .swap_xy = 1,
-                .mirror_x = 1,
+                // 屏幕 DISPLAY_MIRROR_X=false 不镜像 x，触摸却 mirror_x=1 软件镜像 x（x=480-x），
+                // 两者映射不一致 → 手指左滑 LVGL 却收到右滑坐标 → 翻页方向反。改 0 与屏幕对齐。
+                .mirror_x = 0,
                 .mirror_y = 1,
             },
         };

@@ -79,6 +79,18 @@ void HerlingDisplay::SetupUI() {
     lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(screen, LV_DIR_NONE);
 
+    // ── 隐藏基类对话 UI ──
+    // 基类 SetupUI() 在 screen 上建了全屏 container_（内含 content_，LV_DIR_VER 垂直滚动），
+    // 且后创建、堆叠在我下方即将创建的 root_ 之上。若不隐藏，content_ 会拦截手指触摸，
+    // 自己垂直滚动，导致我的 tabview 只有左上角标题附近露出的区域能滑动。
+    // 仪表盘模式下对话 UI 全部隐藏，只保留仪表盘自身交互。
+    if (container_ != nullptr) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+    if (top_bar_ != nullptr) lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+    if (status_bar_ != nullptr) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+    if (content_ != nullptr) lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
+    if (emoji_box_ != nullptr) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    if (bottom_bar_ != nullptr) lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+
     // ── 仪表盘覆盖层 root_ ──
     root_ = lv_obj_create(screen);
     lv_obj_set_size(root_, LV_HOR_RES, LV_VER_RES);
@@ -126,9 +138,15 @@ void HerlingDisplay::SetupUI() {
     lv_obj_set_style_bg_opa(tabview_, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tabview_, 0, 0);
     lv_obj_set_style_pad_all(tabview_, 0, 0);
-    // 隐藏自带的标签按钮栏（用左上标题 + 底部圆点指示器代替），标签栏高度清零让内容铺满。
+    // 隐藏自带的标签按钮栏（用左上标题 + 底部圆点指示器代替），标签栏尺寸清零让内容铺满。
     lv_tabview_set_tab_bar_size(tabview_, 0);
     lv_obj_add_flag(lv_tabview_get_tab_bar(tabview_), LV_OBJ_FLAG_HIDDEN);
+
+    // ── 顺滑参数（官方推荐）──
+    // content 容器是 tabview 内部横向滚动的载体（lv_tabview_get_content），默认翻页动画约
+    // 200-300ms 的 ease-out 曲线在 ESP32-S3 上会掉帧、显拖沓。缩短到 150ms 线性，滑动跟手。
+    lv_obj_t* tab_content = lv_tabview_get_content(tabview_);
+    lv_obj_set_style_anim_duration(tab_content, 150, 0);
 
     // 四个页面 = 四个 tab（tab 是 content 的子对象，横向排列，滑动时 content 滚动吸附）。
     for (int i = 0; i < kPageCount; i++) {
