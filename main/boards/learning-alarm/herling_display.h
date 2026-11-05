@@ -37,7 +37,8 @@ private:
     // ── 仪表盘覆盖层 ──
     lv_obj_t* root_ = nullptr;                    // 全屏仪表盘容器（深色）
     lv_obj_t* title_label_ = nullptr;             // 左上动态标题「赫灵 · 时钟」
-    lv_obj_t* pages_[kPageCount] = {};            // 四个页面容器
+    lv_obj_t* tabview_ = nullptr;                 // 官方分页组件：承载四页 + 内建滑动翻页
+    lv_obj_t* pages_[kPageCount] = {};            // 四个页面容器（即 tabview 的 tab 内容对象）
     lv_obj_t* dots_[kPageCount] = {};             // 四个圆点指示器
     lv_obj_t* dot_container_ = nullptr;
 
@@ -53,20 +54,17 @@ private:
     std::unique_ptr<LvglGif> pet_gif_;            // 小图状态动画（idle/waving/review…）
     const char* pet_gif_name_ = nullptr;          // 当前播放 GIF 名，同名跳过防闪烁
 
-    Page current_page_ = kPageClock;
-
     void BuildClockPage();
     void BuildSchedulePage();
     void BuildTodoPage();
     void BuildSettingsPage();
 
-    void ShowPage(Page page);
     void RefreshMode();
     void UpdateClockLabels();
     void PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img, const char* gif_name,
                     int scale);
 
-    static void GestureEventCb(lv_event_t* e);
+    static void TabChangedCb(lv_event_t* e);
     static void ClockTimerCb(lv_timer_t* timer);
 };
 

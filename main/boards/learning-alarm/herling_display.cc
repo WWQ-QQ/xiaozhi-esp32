@@ -42,9 +42,6 @@ const char* EmotionToGif(const char* emotion) {
 // 终端固件不再硬编码。课表页/待办页/时钟页「下一节」显示占位，待数据层接口接入。
 const char* kWeekCn[] = {"日", "一", "二", "三", "四", "五", "六"};
 
-// 滑动翻页最小横向位移（px），同时用作 gesture_min_distance 门槛。
-constexpr int kSwipeThreshold = 30;
-
 const char* kPageTitles[4] = {
     "赫灵 · 时钟", "赫灵 · 课表", "赫灵 · 待办", "赫灵 · 设置"};
 
@@ -113,23 +110,35 @@ void HerlingDisplay::SetupUI() {
         dots_[i] = lv_obj_create(dot_container_);
         lv_obj_set_size(dots_[i], 6, 6);
         lv_obj_set_style_radius(dots_[i], LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(dots_[i], lv_color_hex(kTextDim), 0);
+        lv_obj_set_style_bg_color(dots_[i], lv_color_hex(i == kPageClock ? kAmber : kTextDim), 0);
         lv_obj_set_style_border_width(dots_[i], 0, 0);
         lv_obj_set_style_pad_all(dots_[i], 0, 0);
     }
 
-    // 四个页面容器
+    // ── 官方分页组件 lv_tabview：承载四页 + 内建横向滑动翻页 ──
+    // 之前手写 GESTURE 事件（注册在 indev 上）做翻页，要大力快甩才触发：LVGL 默认
+    // gesture_min_velocity=3px 的累加门槛会重置慢滑位移，永远攒不够距离门槛。官方
+    // lv_tabview 已封装好「内容区横向滑动即翻页」，直接复用，不再自己跟触摸坐标搏斗。
+    tabview_ = lv_tabview_create(root_);
+    lv_obj_set_size(tabview_, LV_HOR_RES, LV_VER_RES - 44);
+    lv_obj_align(tabview_, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_radius(tabview_, 0, 0);
+    lv_obj_set_style_bg_opa(tabview_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tabview_, 0, 0);
+    lv_obj_set_style_pad_all(tabview_, 0, 0);
+    // 隐藏自带的标签按钮栏（用左上标题 + 底部圆点指示器代替），标签栏高度清零让内容铺满。
+    lv_tabview_set_tab_bar_size(tabview_, 0);
+    lv_obj_add_flag(lv_tabview_get_tab_bar(tabview_), LV_OBJ_FLAG_HIDDEN);
+
+    // 四个页面 = 四个 tab（tab 是 content 的子对象，横向排列，滑动时 content 滚动吸附）。
     for (int i = 0; i < kPageCount; i++) {
-        pages_[i] = lv_obj_create(root_);
-        lv_obj_set_size(pages_[i], LV_HOR_RES, LV_VER_RES - 44);
+        pages_[i] = lv_tabview_add_tab(tabview_, kPageTitles[i]);
         lv_obj_set_style_radius(pages_[i], 0, 0);
         lv_obj_set_style_bg_opa(pages_[i], LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(pages_[i], 0, 0);
         lv_obj_set_style_pad_all(pages_[i], 12, 0);
         lv_obj_set_scrollbar_mode(pages_[i], LV_SCROLLBAR_MODE_OFF);
         lv_obj_clear_flag(pages_[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_align(pages_[i], LV_ALIGN_TOP_MID, 0, 40);
-        if (i != kPageClock) lv_obj_add_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     BuildClockPage();
@@ -137,20 +146,8 @@ void HerlingDisplay::SetupUI() {
     BuildTodoPage();
     BuildSettingsPage();
 
-    // 滑动换页：GESTURE 事件注册在输入设备（indev）上。
-    // indev_gesture() 触发后会 lv_indev_send_event(indev, LV_EVENT_GESTURE) —— 这行确定发给
-    // indev 本身，与命中哪个对象无关、无需冒泡。相比之下 lv_obj_send_event(gesture_obj) 发
-    // 给命中的子对象（如 page 容器/label），不会自动到 root_，对象级注册不可靠。
-    // 为什么之前"要大力快甩"：LVGL 默认 gesture_min_velocity=3px，慢滑每帧位移 <3px 时
-    // gesture_sum 累加器被重置，永远攒不够 gesture_min_distance=50px。清零速度门槛、缩短
-    // 距离门槛，让慢滑也能累加位移，轻滑即翻页。
-    for (lv_indev_t* it = lv_indev_get_next(nullptr); it != nullptr; it = lv_indev_get_next(it)) {
-        if (lv_indev_get_type(it) == LV_INDEV_TYPE_POINTER) {
-            lv_indev_set_gesture_min_velocity(it, 0);
-            lv_indev_set_gesture_min_distance(it, kSwipeThreshold);
-            lv_indev_add_event_cb(it, GestureEventCb, LV_EVENT_GESTURE, this);
-        }
-    }
+    // 换页回调：滑动（或 lv_tabview_set_active）切页时，同步左上标题与底部圆点。
+    lv_obj_add_event_cb(tabview_, TabChangedCb, LV_EVENT_VALUE_CHANGED, this);
 
     // 时钟刷新定时器（每秒）
     lv_timer_create(ClockTimerCb, 1000, this);
@@ -245,23 +242,6 @@ void HerlingDisplay::BuildSettingsPage() {
     lv_label_set_text(hint, "音量 / 亮度 / 网络 · 待接入");
     lv_obj_set_style_text_color(hint, lv_color_hex(kTextDim), 0);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 0);
-}
-
-void HerlingDisplay::ShowPage(Page page) {
-    if (page >= kPageCount) return;
-    current_page_ = page;
-    for (int i = 0; i < kPageCount; i++) {
-        if (i == page) {
-            lv_obj_remove_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(pages_[i], LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-    lv_label_set_text(title_label_, kPageTitles[page]);
-    for (int i = 0; i < kPageCount; i++) {
-        lv_obj_set_style_bg_color(dots_[i],
-                                  i == page ? lv_color_hex(kAmber) : lv_color_hex(kTextDim), 0);
-    }
 }
 
 void HerlingDisplay::RefreshMode() {
@@ -369,19 +349,19 @@ void HerlingDisplay::SetStatus(const char* status) {
     RefreshMode();
 }
 
-void HerlingDisplay::GestureEventCb(lv_event_t* e) {
+void HerlingDisplay::TabChangedCb(lv_event_t* e) {
     auto* self = static_cast<HerlingDisplay*>(lv_event_get_user_data(e));
-    lv_indev_t* indev = lv_indev_active();
-    if (indev == nullptr) return;
-    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
-    if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) return;  // 只响应横向滑动
-
-    // 左滑（dir=LEFT，手指右移负向）→ 下一页；右滑（dir=RIGHT）→ 上一页
-    Page target = static_cast<Page>(
-        (self->current_page_ + (dir == LV_DIR_LEFT ? 1 : kPageCount - 1)) % kPageCount);
-    ESP_LOGI(TAG, "Swipe %s -> page %d", dir == LV_DIR_LEFT ? "left" : "right", (int)target);
+    if (self == nullptr || self->tabview_ == nullptr) return;
+    uint32_t act = lv_tabview_get_tab_act(self->tabview_);
+    if (act >= kPageCount) act = kPageClock;
+    ESP_LOGI(TAG, "Tab changed -> %d (%s)", (int)act, kPageTitles[act]);
     DisplayLockGuard lock(self);
-    self->ShowPage(target);
+    lv_label_set_text(self->title_label_, kPageTitles[act]);
+    for (int i = 0; i < kPageCount; i++) {
+        lv_obj_set_style_bg_color(self->dots_[i],
+                                  i == (int)act ? lv_color_hex(kAmber) : lv_color_hex(kTextDim),
+                                  0);
+    }
 }
 
 void HerlingDisplay::ClockTimerCb(lv_timer_t* timer) {
