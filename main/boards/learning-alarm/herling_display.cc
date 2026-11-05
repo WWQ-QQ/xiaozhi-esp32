@@ -137,10 +137,21 @@ void HerlingDisplay::SetupUI() {
     BuildTodoPage();
     BuildSettingsPage();
 
-    // 滑动换页：自建 PRESSED/RELEASED 位移判定（阈值轻、轻滑即翻页）。
-    // 不用 LV_EVENT_GESTURE——它要求快速甩动速度，慢滑不触发，手感不灵活。
-    lv_obj_add_event_cb(screen, TouchEventCb, LV_EVENT_PRESSED, this);
-    lv_obj_add_event_cb(screen, TouchEventCb, LV_EVENT_RELEASED, this);
+    // 滑动换页：自建按下/抬起位移判定（阈值轻、轻滑即翻页）。
+    // 用输入设备级事件（lv_indev_add_event_cb）而非对象级 lv_obj_add_event_cb——
+    // 对象级 PRESSED/RELEASED 只派发给命中对象且默认不冒泡到 screen，收不到；
+    // LV_EVENT_GESTURE 又有速度门槛，慢滑不触发。indev 级事件绕开命中/冒泡，轻滑即翻页。
+    lv_indev_t* touch_indev = nullptr;
+    for (lv_indev_t* it = lv_indev_get_next(nullptr); it != nullptr; it = lv_indev_get_next(it)) {
+        if (lv_indev_get_type(it) == LV_INDEV_TYPE_POINTER) {
+            touch_indev = it;
+            break;
+        }
+    }
+    if (touch_indev != nullptr) {
+        lv_indev_add_event_cb(touch_indev, TouchEventCb, LV_EVENT_PRESSED, this);
+        lv_indev_add_event_cb(touch_indev, TouchEventCb, LV_EVENT_RELEASED, this);
+    }
 
     // 时钟刷新定时器（每秒）
     lv_timer_create(ClockTimerCb, 1000, this);
@@ -255,21 +266,29 @@ void HerlingDisplay::ShowPage(Page page) {
 }
 
 void HerlingDisplay::RefreshMode() {
-    // 仪表盘始终显示（含待机/配网/启动/对话）。鲸鱼娘常驻时钟页小图，对话时由
-    // SetEmotion 驱动小图状态切换，不再跳转基类 emoji_box_ 大图（用户确认：形象在桌面即可）。
+    // 仪表盘始终显示（含待机/配网/启动/对话）。鲸鱼娘常驻时钟页小图，不再跳转基类
+    // emoji_box_ 大图（用户确认：形象在桌面即可）。
     if (root_ != nullptr) lv_obj_remove_flag(root_, LV_OBJ_FLAG_HIDDEN);
     if (emoji_box_ != nullptr) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
     if (bottom_bar_ != nullptr) lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
 
+    // 鲸鱼娘表情由设备状态驱动（而非服务端 emotion 字符串——应用层在 Listening/Connecting/
+    // Idle 均下发 "neutral"，无法区分状态，表情恒定不变）。待机 idle，聆听挥手，说话思考，
+    // 连接等待。
     auto state = Application::GetInstance().GetDeviceState();
-    bool chatting = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
-                     state == kDeviceStateConnecting);
-    if (!chatting) {
-        UpdateClockLabels();
-        // 鲸鱼娘 idle 动画懒加载：assets 就绪前会失败，每次回待机态重试
-        if (pet_image_ != nullptr) {
-            PlayPetGif(pet_gif_, pet_image_, "idle.gif", 256);
-        }
+    const char* gif = EmotionToGif("neutral");
+    if (state == kDeviceStateListening) {
+        gif = EmotionToGif("listening");
+    } else if (state == kDeviceStateSpeaking) {
+        gif = EmotionToGif("thinking");
+    } else if (state == kDeviceStateConnecting) {
+        gif = EmotionToGif("waiting");
+    }
+
+    UpdateClockLabels();
+    // 鲸鱼娘动画懒加载：assets 就绪前会失败，下次状态刷新重试
+    if (pet_image_ != nullptr) {
+        PlayPetGif(pet_gif_, pet_image_, gif, 256);
     }
 }
 
@@ -339,12 +358,10 @@ void HerlingDisplay::PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img,
 }
 
 void HerlingDisplay::SetEmotion(const char* emotion) {
-    // 鲸鱼娘常驻时钟页小图：待机 idle，对话随 agent 状态切 GIF（idle→waving→review…），
-    // 不再切基类 emoji_image_ 大图。
+    // 鲸鱼娘表情由设备状态驱动（见 RefreshMode），忽略服务端 emotion 字符串并收敛到状态驱动。
+    (void)emotion;
     DisplayLockGuard lock(this);
-    if (pet_image_ != nullptr) {
-        PlayPetGif(pet_gif_, pet_image_, EmotionToGif(emotion), 256);
-    }
+    RefreshMode();
 }
 
 void HerlingDisplay::SetStatus(const char* status) {
@@ -355,8 +372,10 @@ void HerlingDisplay::SetStatus(const char* status) {
 
 void HerlingDisplay::TouchEventCb(lv_event_t* e) {
     auto* self = static_cast<HerlingDisplay*>(lv_event_get_user_data(e));
+    lv_indev_t* indev = lv_event_get_indev(e);
+    if (indev == nullptr) return;
     lv_point_t pt;
-    lv_indev_get_point(lv_indev_active(), &pt);
+    lv_indev_get_point(indev, &pt);
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
         self->press_x_ = pt.x;
         self->press_y_ = pt.y;
@@ -372,6 +391,8 @@ void HerlingDisplay::TouchEventCb(lv_event_t* e) {
         // 右滑（dx>0）→ 上一页；左滑（dx<0）→ 下一页
         Page target = static_cast<Page>(
             (self->current_page_ + (dx > 0 ? kPageCount - 1 : 1)) % kPageCount);
+        ESP_LOGI(TAG, "Swipe %s -> page %d (dx=%d, dy=%d)", dx > 0 ? "right" : "left",
+                 (int)target, dx, dy);
         DisplayLockGuard lock(self);
         self->ShowPage(target);
     }
