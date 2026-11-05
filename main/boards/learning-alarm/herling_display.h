@@ -54,8 +54,6 @@ private:
     const char* pet_gif_name_ = nullptr;          // 当前播放 GIF 名，同名跳过防闪烁
 
     Page current_page_ = kPageClock;
-    int press_x_ = 0;                             // 按下坐标（自建滑动判定）
-    int press_y_ = 0;
 
     void BuildClockPage();
     void BuildSchedulePage();
@@ -68,7 +66,7 @@ private:
     void PlayPetGif(std::unique_ptr<LvglGif>& gif, lv_obj_t* img, const char* gif_name,
                     int scale);
 
-    static void TouchEventCb(lv_event_t* e);
+    static void GestureEventCb(lv_event_t* e);
     static void ClockTimerCb(lv_timer_t* timer);
 };
 

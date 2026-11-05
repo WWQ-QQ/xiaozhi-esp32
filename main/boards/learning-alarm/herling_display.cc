@@ -42,7 +42,7 @@ const char* EmotionToGif(const char* emotion) {
 // 终端固件不再硬编码。课表页/待办页/时钟页「下一节」显示占位，待数据层接口接入。
 const char* kWeekCn[] = {"日", "一", "二", "三", "四", "五", "六"};
 
-// 滑动翻页最小横向位移（px）。不用 LV_EVENT_GESTURE 的速度门槛，轻滑即可触发。
+// 滑动翻页最小横向位移（px），同时用作 gesture_min_distance 门槛。
 constexpr int kSwipeThreshold = 30;
 
 const char* kPageTitles[4] = {
@@ -137,20 +137,19 @@ void HerlingDisplay::SetupUI() {
     BuildTodoPage();
     BuildSettingsPage();
 
-    // 滑动换页：自建按下/抬起位移判定（阈值轻、轻滑即翻页）。
-    // 用输入设备级事件（lv_indev_add_event_cb）而非对象级 lv_obj_add_event_cb——
-    // 对象级 PRESSED/RELEASED 只派发给命中对象且默认不冒泡到 screen，收不到；
-    // LV_EVENT_GESTURE 又有速度门槛，慢滑不触发。indev 级事件绕开命中/冒泡，轻滑即翻页。
-    lv_indev_t* touch_indev = nullptr;
+    // 滑动换页：GESTURE 事件注册在输入设备（indev）上。
+    // indev_gesture() 触发后会 lv_indev_send_event(indev, LV_EVENT_GESTURE) —— 这行确定发给
+    // indev 本身，与命中哪个对象无关、无需冒泡。相比之下 lv_obj_send_event(gesture_obj) 发
+    // 给命中的子对象（如 page 容器/label），不会自动到 root_，对象级注册不可靠。
+    // 为什么之前"要大力快甩"：LVGL 默认 gesture_min_velocity=3px，慢滑每帧位移 <3px 时
+    // gesture_sum 累加器被重置，永远攒不够 gesture_min_distance=50px。清零速度门槛、缩短
+    // 距离门槛，让慢滑也能累加位移，轻滑即翻页。
     for (lv_indev_t* it = lv_indev_get_next(nullptr); it != nullptr; it = lv_indev_get_next(it)) {
         if (lv_indev_get_type(it) == LV_INDEV_TYPE_POINTER) {
-            touch_indev = it;
-            break;
+            lv_indev_set_gesture_min_velocity(it, 0);
+            lv_indev_set_gesture_min_distance(it, kSwipeThreshold);
+            lv_indev_add_event_cb(it, GestureEventCb, LV_EVENT_GESTURE, this);
         }
-    }
-    if (touch_indev != nullptr) {
-        lv_indev_add_event_cb(touch_indev, TouchEventCb, LV_EVENT_PRESSED, this);
-        lv_indev_add_event_cb(touch_indev, TouchEventCb, LV_EVENT_RELEASED, this);
     }
 
     // 时钟刷新定时器（每秒）
@@ -370,32 +369,19 @@ void HerlingDisplay::SetStatus(const char* status) {
     RefreshMode();
 }
 
-void HerlingDisplay::TouchEventCb(lv_event_t* e) {
+void HerlingDisplay::GestureEventCb(lv_event_t* e) {
     auto* self = static_cast<HerlingDisplay*>(lv_event_get_user_data(e));
-    lv_indev_t* indev = lv_event_get_indev(e);
+    lv_indev_t* indev = lv_indev_active();
     if (indev == nullptr) return;
-    lv_point_t pt;
-    lv_indev_get_point(indev, &pt);
-    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
-        self->press_x_ = pt.x;
-        self->press_y_ = pt.y;
-        return;
-    }
+    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) return;  // 只响应横向滑动
 
-    // 松开：按位移判定，轻滑即翻页（LV_EVENT_GESTURE 要求快速甩动速度，慢滑不触发）
-    int dx = pt.x - self->press_x_;
-    int dy = pt.y - self->press_y_;
-    int adx = dx < 0 ? -dx : dx;
-    int ady = dy < 0 ? -dy : dy;
-    if (adx > kSwipeThreshold && adx > ady) {
-        // 右滑（dx>0）→ 上一页；左滑（dx<0）→ 下一页
-        Page target = static_cast<Page>(
-            (self->current_page_ + (dx > 0 ? kPageCount - 1 : 1)) % kPageCount);
-        ESP_LOGI(TAG, "Swipe %s -> page %d (dx=%d, dy=%d)", dx > 0 ? "right" : "left",
-                 (int)target, dx, dy);
-        DisplayLockGuard lock(self);
-        self->ShowPage(target);
-    }
+    // 左滑（dir=LEFT，手指右移负向）→ 下一页；右滑（dir=RIGHT）→ 上一页
+    Page target = static_cast<Page>(
+        (self->current_page_ + (dir == LV_DIR_LEFT ? 1 : kPageCount - 1)) % kPageCount);
+    ESP_LOGI(TAG, "Swipe %s -> page %d", dir == LV_DIR_LEFT ? "left" : "right", (int)target);
+    DisplayLockGuard lock(self);
+    self->ShowPage(target);
 }
 
 void HerlingDisplay::ClockTimerCb(lv_timer_t* timer) {
